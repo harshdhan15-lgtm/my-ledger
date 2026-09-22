@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0f172a">
+  <link rel="manifest" href="manifest.json">
+  <title>Offline Vault Ledger</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; padding: 1rem; max-width: 480px; margin: auto; }
+    
+    .card { background: #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; border: 1px solid #334155; }
+    .stats { display: flex; justify-content: space-between; text-align: center; }
+    .stat-val { font-size: 1.25rem; font-weight: 700; margin-top: 4px; }
+    .inc { color: #34d399; }
+    .exp { color: #f87171; }
+    
+    input, select, button { width: 100%; padding: 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #fff; margin-top: 0.5rem; font-size: 1rem; }
+    .type-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem; }
+    .type-btn { padding: 0.6rem; border: 1px solid #475569; background: #1e293b; cursor: pointer; }
+    .type-btn.active-exp { background: #dc2626; border-color: #ef4444; }
+    .type-btn.active-inc { background: #059669; border-color: #10b981; }
+    
+    .submit-btn { background: #2563eb; font-weight: bold; border: none; cursor: pointer; margin-top: 1rem; }
+    .list-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid #334155; }
+    .del-btn { width: auto; padding: 4px 8px; font-size: 0.75rem; background: #334155; border: none; margin: 0; cursor: pointer; }
+    .backup-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem; }
+    .sec-btn { background: #334155; border: none; font-size: 0.85rem; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <!-- Balance Snapshot -->
+  <div class="card stats">
+    <div>
+      <small style="color:#94a3b8">Income</small>
+      <div id="tot-inc" class="stat-val inc">₹0</div>
+    </div>
+    <div>
+      <small style="color:#94a3b8">Expenses</small>
+      <div id="tot-exp" class="stat-val exp">₹0</div>
+    </div>
+    <div>
+      <small style="color:#94a3b8">Net Balance</small>
+      <div id="tot-net" class="stat-val">₹0</div>
+    </div>
+  </div>
+
+  <!-- Entry Form -->
+  <div class="card">
+    <div class="type-toggle">
+      <button type="button" id="btn-exp" class="type-btn active-exp" onclick="setType('EXPENSE')">Expense</button>
+      <button type="button" id="btn-inc" class="type-btn" onclick="setType('INCOME')">Income</button>
+    </div>
+    <form id="tx-form">
+      <input type="number" id="amount" placeholder="Amount (e.g. 250)" step="any" required inputmode="decimal">
+      <input type="text" id="category" placeholder="Category (e.g. Groceries, Fuel, Salary)" required list="cat-suggestions">
+      <datalist id="cat-suggestions">
+        <option value="Groceries"><option value="Fuel / Transit"><option value="Bills"><option value="Food & Dining"><option value="Salary">
+      </datalist>
+      <input type="text" id="note" placeholder="Note (Optional)">
+      <input type="date" id="date" required>
+      <button type="submit" class="submit-btn">Save Entry</button>
+    </form>
+  </div>
+
+  <!-- Recent Ledger -->
+  <div class="card">
+    <h3 style="font-size: 1rem; margin-bottom: 0.5rem;">Recent Records</h3>
+    <div id="records-list"></div>
+    <div class="backup-actions">
+      <button class="sec-btn" onclick="exportCSV()">Export to CSV</button>
+      <button class="sec-btn" onclick="document.getElementById('import-file').click()">Restore CSV</button>
+      <input type="file" id="import-file" style="display:none" accept=".csv" onchange="importCSV(event)">
+    </div>
+  </div>
+
+  <script>
+    // --- 1. Service Worker Registration ---
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js');
+    }
+
+    // --- 2. Local IndexedDB Setup ---
+    let db, currentType = 'EXPENSE';
+    document.getElementById('date').value = new Date().toISOString().split('T')[0];
+
+    const req = indexedDB.open('OfflineLedgerDB', 1);
+    req.onupgradeneeded = (e) => {
+      db = e.target.result;
+      const store = db.createObjectStore('transactions', { keyPath: 'id', autoIncrement: true });
+      store.createIndex('date', 'date', { unique: false });
+    };
+    req.onsuccess = (e) => {
+      db = e.target.result;
+      renderApp();
+    };
+
+    function setType(type) {
+      currentType = type;
+      document.getElementById('btn-exp').className = 'type-btn ' + (type === 'EXPENSE' ? 'active-exp' : '');
+      document.getElementById('btn-inc').className = 'type-btn ' + (type === 'INCOME' ? 'active-inc' : '');
+    }
+
+    // --- 3. CRUD Operations ---
+    document.getElementById('tx-form').onsubmit = (e) => {
+      e.preventDefault();
+      const tx = {
+        type: currentType,
+        amount: parseFloat(document.getElementById('amount').value),
+        category: document.getElementById('category').value.trim(),
+        note: document.getElementById('note').value.trim(),
+        date: document.getElementById('date').value,
+        timestamp: Date.now()
+      };
+      const t = db.transaction('transactions', 'readwrite');
+      t.objectStore('transactions').add(tx);
+      t.oncomplete = () => {
+        document.getElementById('amount').value = '';
+        document.getElementById('note').value = '';
+        renderApp();
+      };
+    };
+
+    function deleteRecord(id) {
+      const t = db.transaction('transactions', 'readwrite');
+      t.objectStore('transactions').delete(id);
+      t.oncomplete = () => renderApp();
+    }
+
+    function renderApp() {
+      const t = db.transaction('transactions', 'readonly');
+      const req = t.objectStore('transactions').getAll();
+      req.onsuccess = () => {
+        const records = req.result.sort((a, b) => new Date(b.date) - new Date(a.date) || b.timestamp - a.timestamp);
+        let inc = 0, exp = 0, html = '';
+
+        records.forEach(r => {
+          if (r.type === 'INCOME') inc += r.amount;
+          else exp += r.amount;
+
+          html += `
+            <div class="list-item">
+              <div>
+                <strong>${r.category}</strong> <small style="color:#64748b">(${r.date})</small>
+                <div style="font-size: 0.8rem; color: #94a3b8">${r.note || ''}</div>
+              </div>
+              <div style="display:flex; align-items:center; gap: 8px;">
+                <span class="${r.type === 'INCOME' ? 'inc' : 'exp'} font-bold">
+                  ${r.type === 'INCOME' ? '+' : '-'}₹${r.amount.toFixed(2)}
+                </span>
+                <button class="del-btn" onclick="deleteRecord(${r.id})">✕</button>
+              </div>
+            </div>`;
+        });
+
+        document.getElementById('tot-inc').innerText = '₹' + inc.toFixed(2);
+        document.getElementById('tot-exp').innerText = '₹' + exp.toFixed(2);
+        document.getElementById('tot-net').innerText = '₹' + (inc - exp).toFixed(2);
+        document.getElementById('records-list').innerHTML = html || '<p style="color:#64748b; text-align:center; padding: 1rem 0;">No records yet.</p>';
+      };
+    }
+
+    // --- 4. CSV Backup / Restore ---
+    function exportCSV() {
+      const t = db.transaction('transactions', 'readonly');
+      t.objectStore('transactions').getAll().onsuccess = (e) => {
+        const data = e.target.result;
+        if (!data.length) return alert('No records to export');
+        let csv = 'id,type,amount,category,note,date\n';
+        data.forEach(r => {
+          csv += `"${r.id}","${r.type}","${r.amount}","${r.category}","${(r.note||'').replace(/"/g, '""')}","${r.date}"\n`;
+        });
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `ledger_backup_${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+      };
+    }
+
+    function importCSV(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const lines = event.target.result.split('\n').slice(1);
+        const t = db.transaction('transactions', 'readwrite');
+        const store = t.objectStore('transactions');
+        lines.forEach(line => {
+          const match = line.match(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g);
+          if (match && match.length >= 6) {
+            const clean = match.map(m => m.replace(/^,?"?|"$/g, '').trim());
+            if (clean[1] && clean[2]) {
+              store.add({
+                type: clean[1],
+                amount: parseFloat(clean[2]),
+                category: clean[3],
+                note: clean[4],
+                date: clean[5],
+                timestamp: Date.now()
+              });
+            }
+          }
+        });
+        t.oncomplete = () => {
+          alert('Import completed successfully!');
+          renderApp();
+        };
+      };
+      reader.readAsText(file);
+    }
+  </script>
+</body>
+</html>
